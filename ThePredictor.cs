@@ -19,11 +19,10 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
     internal ThePredictor(string guid)
     {
         _guid = new Guid(guid);
-        _runspace = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault());
+        var sessionState = InitialSessionState.CreateDefault();
+        _runspace = RunspaceFactory.CreateRunspace(sessionState);
         _runspace.Name = nameof(ThePredictor);
         _runspace.Open();
-
-        CacheHistorySavePath();
     }
 
     /// <summary>
