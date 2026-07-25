@@ -1,12 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Threading;
-using System.Management.Automation;
+﻿using System.Management.Automation;
+using System.Management.Automation.Runspaces;
 using System.Management.Automation.Subsystem;
 using System.Management.Automation.Subsystem.Prediction;
-using System.Management.Automation.Runspaces;
-using static System.Net.Mime.MediaTypeNames;
-using System.Security.Cryptography.Xml;
 
 namespace BasicHistoryPredictor;
 
@@ -14,6 +9,8 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
 {
     private readonly Guid _guid;
     private readonly Runspace _runspace;
+
+    public static ThePredictor? Instance { get; private set;  }
 
 
     internal ThePredictor(string guid)
@@ -23,6 +20,7 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
         _runspace = RunspaceFactory.CreateRunspace(sessionState);
         _runspace.Name = nameof(ThePredictor);
         _runspace.Open();
+        Instance = this;
     }
 
     /// <summary>
