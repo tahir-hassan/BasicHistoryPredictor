@@ -1,32 +1,42 @@
 ﻿using System.Management.Automation;
+using System.Management.Automation.Host;
 using System.Management.Automation.Runspaces;
-using System.Management.Automation.Subsystem;
 using System.Management.Automation.Subsystem.Prediction;
+using System.Text.RegularExpressions;
 
 namespace BasicHistoryPredictor;
 
 public partial class ThePredictor : ICommandPredictor, IDisposable
 {
-    private readonly Guid _guid;
-    private readonly Runspace _runspace;
+    public static readonly Guid SubsystemIdentifier = new("dea9d976-6bfc-4726-857d-3bf2339dc1ba");
 
+    private readonly Runspace _runspace;
+    private readonly PSConsole psConsoleReadLine;
+    private readonly PSCachedHistory cachedHistory;
+    private string[]? lastShownHistoryItems;
+    public static List<string> ErrorMessages = [];
     public static ThePredictor? Instance { get; private set;  }
 
 
-    internal ThePredictor(string guid)
+    internal ThePredictor(EngineIntrinsics intrinsics)
     {
-        _guid = new Guid(guid);
+        Intrinsics = intrinsics;
+
         var sessionState = InitialSessionState.CreateDefault();
+        
         _runspace = RunspaceFactory.CreateRunspace(sessionState);
         _runspace.Name = nameof(ThePredictor);
         _runspace.Open();
+
+        psConsoleReadLine = new PSConsole(_runspace);
+        cachedHistory = new PSCachedHistory(psConsoleReadLine);
         Instance = this;
     }
 
     /// <summary>
     /// Gets the unique identifier for a subsystem implementation.
     /// </summary>
-    public Guid Id => _guid;
+    public Guid Id => SubsystemIdentifier;
      /// <summary> 
      /// Gets the name of a subsystem implementation.  
      /// </summary> 
@@ -36,11 +46,39 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
     /// </summary>
     public string Description => "A more forgiving history predictor";
 
+    public EngineIntrinsics Intrinsics { get; }
 
-    private static PredictiveSuggestion CreatePredictiveSuggestion(string item)
+    public IEnumerable<string> GetCachedHistory()
+    {
+        return cachedHistory.GetCachedHistory();
+    }
+    private PredictiveSuggestion CreatePredictiveSuggestion(string item)
     {
         return new PredictiveSuggestion(item);
     }
+
+    private void SendPromptToTop()
+    {
+        var cursorTop = Console.CursorTop;
+        var cursorLeft = Console.CursorLeft;
+        if (cursorTop > 1)
+        {
+            Console.SetCursorPosition(Console.BufferWidth - 1, Console.BufferHeight - 1);
+            Console.Write(new string('\n', cursorTop));
+            Console.SetCursorPosition(cursorLeft, 0);
+        }
+    }
+
+    private void ClearAreaBelowCursor()
+    {
+        var windowSize = Intrinsics.Host.UI.RawUI.WindowSize;
+        var cursorPos = Intrinsics.Host.UI.RawUI.CursorPosition;
+        if (cursorPos.Y < windowSize.Height)
+        {
+            Intrinsics.Host.UI.RawUI.SetBufferContents(new Rectangle(0, cursorPos.Y + 1, windowSize.Width, windowSize.Height), new BufferCell());
+        }
+    }
+   
     /// <summary>
     /// Get the predictive suggestions. It indicates the start of a suggestion rendering session.
     /// </summary>
@@ -50,15 +88,34 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
     /// <returns>An instance of <see cref="SuggestionPackage"/>.</returns>
     public SuggestionPackage GetSuggestion(PredictionClient client, PredictionContext context, CancellationToken cancellationToken)
     {
-        string input = context.InputAst.Extent.Text;
-        if (string.IsNullOrWhiteSpace(input))
+        try
         {
-            return default;
+            ClearAreaBelowCursor();
+
+            lastShownHistoryItems = null;
+            string input = context.InputAst.Extent.Text;
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                return new SuggestionPackage([]);
+            }
+            else
+            {
+                var historyItems = GetHistoryItems(input);
+                lastShownHistoryItems = historyItems;
+
+                if (historyItems.Take(10).Any(item => item.Contains('\n')))
+                {
+                    SendPromptToTop();
+                }
+                
+                return new SuggestionPackage(historyItems.Select(CreatePredictiveSuggestion).ToList());
+            }
         }
-
-        var historyItems = GetHistoryItems(input);
-
-        return new SuggestionPackage(historyItems.Select(CreatePredictiveSuggestion).ToList());
+        catch (Exception ex)
+        {
+            ErrorMessages.Add($"{ex.GetType().Name} - {ex.Message}");
+            return new SuggestionPackage([]);
+        }
     }
 
     #region "interface methods for processing feedback"
@@ -108,8 +165,10 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
     /// <param name="success">Shows whether the execution was successful.</param>
     public void OnCommandLineExecuted(PredictionClient client, string commandLine, bool success) 
     {
-        _historyItems = null;
-    
+        if (success)
+        {
+            cachedHistory.AddToCachedHistory(commandLine);
+        }
     }
 
     public void Dispose()
@@ -118,31 +177,51 @@ public partial class ThePredictor : ICommandPredictor, IDisposable
     }
 
     #endregion;
-}
 
-
-/// <summary>
-/// Register the predictor on module loading and unregister it on module un-loading.
-/// </summary>
-public class Init : IModuleAssemblyInitializer, IModuleAssemblyCleanup
-{
-    // Identifier specific to this module
-    private const string Identifier = "dea9d976-6bfc-4726-857d-3bf2339dc1ba";
-
-    /// <summary>
-    /// Gets called when assembly is loaded.
-    /// </summary>
-    public void OnImport()
+    public string[] GetHistoryItems(string input)
     {
-        var predictor = new ThePredictor(Identifier);
-        SubsystemManager.RegisterSubsystem(SubsystemKind.CommandPredictor, predictor);
+        input = input.Trim();
+
+        var history = cachedHistory.GetCachedHistory();
+
+        if (!history.Any())
+        {
+            return [];
+        }
+        else
+        {
+            var modifiedInput = input.Replace("(", "( ").Replace(")", " )").Replace("[", "[ ").Replace("]", " ]");
+            var inputRegexString = Regex.Escape(modifiedInput).Replace(@"\ ", ".*");
+            var regexInput = new Regex(inputRegexString, RegexOptions.IgnoreCase);
+            var historyMatches = history.Reverse().Distinct().Select(x => new
+            {
+                item = x,
+                match = regexInput.Match(x)
+            }).Where(x => x.match.Success).ToArray();
+            
+            var startsWith = historyMatches.ToLookup(x => x.match.Index == 0);
+
+            return startsWith[true].Concat(startsWith[false]).Select(x => x.item).ToArray();
+        }
+
     }
 
     /// <summary>
-    /// Gets called when the binary module is unloaded.
+    /// removes an item from the history
     /// </summary>
-    public void OnRemove(PSModuleInfo psModuleInfo)
+    /// <param name="item">item to remove from history</param>
+    /// <returns>index of the removed item</returns>
+    public int RemoveItem(string item)
     {
-        SubsystemManager.UnregisterSubsystem(SubsystemKind.CommandPredictor, new Guid(Identifier));
+        int index = (lastShownHistoryItems != null) ? Array.IndexOf(lastShownHistoryItems, item) : -1;
+        
+        cachedHistory.RemoveFromCachedHistory(item);
+
+        var historySavePath = psConsoleReadLine.GetHistorySavePath();
+        var lines = PSHistory.GetHistoryLines(historySavePath);
+        var newLines = lines.Except([PSHistory.SuggestedLineToStoredLine(item)]).ToArray();
+        PSHistory.SetHistoryLines(historySavePath, newLines);
+
+        return index;
     }
 }
