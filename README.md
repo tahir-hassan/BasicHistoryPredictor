@@ -84,6 +84,6 @@ When running `dotnet`, it created a project with a .NET version of 8.
 
 I have used the most up to date NuGet package for Microsoft.PowerShell.SDK for 7.4.x.
 
-# TOOD
+# TODO
 
 - Put this on PSGallery.
