@@ -9,9 +9,10 @@ BasicHistoryPredictor\bin\Debug\net8.0\BasicHistoryPredictor.dll
 After copying the `net8.0` build folder somewhere, you can then do this in PowerShell:
 
 ```
-Import-Module "path/to/BasicHistoryPredictor.dll";
+Import-Module "path/to/BasicHistoryPredictor.dll"
 Register-BasicHistoryPredictor
-Set-PSReadLineOption -PredictionSource Plugin;
+Set-PSReadLineOption -PredictionSource Plugin
+Set-PSReadLineOption -PredictionViewStyle ListView
 ``` 
 
 # Removing History Items
